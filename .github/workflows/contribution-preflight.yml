@@ -1,0 +1,47 @@
+name: Contribution preflight 134
+on:
+  push:
+    branches: [codex/preflight-134]
+permissions:
+  contents: read
+env:
+  TESTED_SHA: 5c4df42989ca51621166208921954dc246fdf2b4
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Verify exact contribution SHA
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go version
+      - run: go build -v .
+      - run: go test -v ./...
+      - run: go vet ./...
+      - name: Go formatting
+        shell: bash
+        run: test -z "$(gofmt -l cmd/cmd.go cmd/cmd_test.go)"
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Verify exact contribution SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: pre-commit/action@v3.0.0
