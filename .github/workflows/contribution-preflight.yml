@@ -14,6 +14,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Preserve repository line endings
+        shell: bash
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.TESTED_SHA }}
@@ -29,7 +32,9 @@ jobs:
       - run: go vet ./...
       - name: Go formatting
         shell: bash
-        run: test -z "$(gofmt -l cmd/cmd.go cmd/cmd_test.go)"
+        run: |
+          gofmt -d cmd/cmd.go cmd/cmd_test.go
+          test -z "$(gofmt -l cmd/cmd.go cmd/cmd_test.go)"
   pre-commit:
     runs-on: ubuntu-latest
     steps:
