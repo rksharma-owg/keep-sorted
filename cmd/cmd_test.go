@@ -12,28 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package cmd_test
+package cmd
 
 import (
-	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/google/keep-sorted/keepsorted"
 )
 
 func TestAllowNoFiles(t *testing.T) {
 	dir := t.TempDir()
-	binary := filepath.Join(dir, "keep-sorted")
-	if runtime.GOOS == "windows" {
-		binary += ".exe"
-	}
-	if out, err := exec.Command("go", "build", "-o", binary, "..").CombinedOutput(); err != nil {
-		t.Fatalf("build keep-sorted: %v\n%s", err, out)
-	}
-
 	// Split markers so keep-sorted does not treat test fixtures as directives.
 	const sorted = "// keep-" + "sorted start\na\nb\n// keep-" + "sorted end\n"
 	const unsorted = "// keep-" + "sorted start\nb\na\n// keep-" + "sorted end\n"
@@ -44,52 +35,76 @@ func TestAllowNoFiles(t *testing.T) {
 	missing := filepath.Join(dir, "missing.txt")
 
 	for _, mode := range []string{"fix", "lint"} {
-		stdinCode, stdinOut := 0, sorted
-		if mode == "lint" {
-			stdinCode, stdinOut = 1, ""
-		}
 		for _, tc := range []struct {
 			name         string
-			args         []string
+			allowNoFiles bool
+			invalidID    bool
+			files        []string
 			stdin        string
-			wantCode     int
+			wantOK       bool
 			wantStdout   string
 			wantError    string
 			wantFindings bool
 		}{
-			{name: "default rejects no files", wantCode: 1, wantError: "must pass one or more filenames"},
-			{name: "enabled accepts no files", args: []string{"--allow-no-files"}},
-			{name: "explicit false rejects no files", args: []string{"--allow-no-files=false"}, wantCode: 1, wantError: "must pass one or more filenames"},
-			{name: "missing file still fails", args: []string{"--allow-no-files", missing}, wantCode: 1, wantError: "missing.txt"},
-			{name: "configuration still validated", args: []string{"--allow-no-files", "--id="}, wantCode: 1, wantError: "id cannot be empty"},
-			{name: "named file still processed", args: []string{"--allow-no-files", file}},
-			{name: "stdin still processed", args: []string{"--allow-no-files", "-"}, stdin: unsorted, wantCode: stdinCode, wantStdout: stdinOut, wantFindings: mode == "lint"},
+			{name: "default rejects no files", wantError: "must pass one or more filenames"},
+			{name: "enabled accepts no files", allowNoFiles: true, wantOK: true},
+			{name: "missing file still fails", allowNoFiles: true, files: []string{missing}, wantError: "missing.txt"},
+			{name: "configuration still validated", allowNoFiles: true, invalidID: true, wantError: "id cannot be empty"},
+			{name: "named file still processed", allowNoFiles: true, files: []string{file}, wantOK: true},
+			{name: "stdin still processed", allowNoFiles: true, files: []string{"-"}, stdin: unsorted, wantOK: mode == "fix", wantStdout: sorted, wantFindings: mode == "lint"},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
-				command := exec.Command(binary, append([]string{"--color=never", "--omit-timestamps", "--mode=" + mode}, tc.args...)...)
-				command.Stdin = strings.NewReader(tc.stdin)
-				var stdout, stderr strings.Builder
-				command.Stdout, command.Stderr = &stdout, &stderr
-				code := 0
-				if err := command.Run(); err != nil {
-					var exitErr *exec.ExitError
-					if !errors.As(err, &exitErr) {
-						t.Fatal(err)
-					}
-					code = exitErr.ExitCode()
+				c := &Config{
+					id:             "keep-sorted",
+					defaultOptions: keepsorted.DefaultBlockOptions(),
+					operation:      operations[mode],
+					allowNoFiles:   tc.allowNoFiles,
 				}
-				if code != tc.wantCode || (!tc.wantFindings && stdout.String() != tc.wantStdout) {
-					t.Errorf("got exit %d, stdout %q; want exit %d, stdout %q; stderr %q", code, stdout.String(), tc.wantCode, tc.wantStdout, stderr.String())
+				if tc.invalidID {
+					c.id = ""
 				}
-				if tc.wantFindings && !strings.Contains(stdout.String(), "These lines are out of order.") {
-					t.Errorf("expected sorting finding in stdout, got %q", stdout.String())
+				input, err := os.CreateTemp(t.TempDir(), "stdin")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { input.Close() })
+				if _, err := input.WriteString(tc.stdin); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := input.Seek(0, 0); err != nil {
+					t.Fatal(err)
+				}
+				output, err := os.CreateTemp(t.TempDir(), "stdout")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { output.Close() })
+				// Standard streams are shared, so these subtests must remain sequential.
+				previousStdin, previousStdout := os.Stdin, os.Stdout
+				t.Cleanup(func() { os.Stdin, os.Stdout = previousStdin, previousStdout })
+				os.Stdin, os.Stdout = input, output
+
+				ok, err := Run(c, tc.files)
+				if ok != tc.wantOK {
+					t.Errorf("Run() ok = %v, want %v", ok, tc.wantOK)
 				}
 				if tc.wantError == "" {
-					if stderr.Len() != 0 {
-						t.Errorf("unexpected stderr: %q", stderr.String())
+					if err != nil {
+						t.Errorf("Run() error = %v", err)
 					}
-				} else if !strings.Contains(stderr.String(), tc.wantError) {
-					t.Errorf("stderr %q does not contain %q", stderr.String(), tc.wantError)
+				} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Errorf("Run() error = %v, want error containing %q", err, tc.wantError)
+				}
+				stdout, err := os.ReadFile(output.Name())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantFindings {
+					if !strings.Contains(string(stdout), "These lines are out of order.") {
+						t.Errorf("expected sorting finding in stdout, got %q", stdout)
+					}
+				} else if string(stdout) != tc.wantStdout {
+					t.Errorf("stdout = %q, want %q", stdout, tc.wantStdout)
 				}
 			})
 		}
