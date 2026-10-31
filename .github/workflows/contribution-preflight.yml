@@ -5,7 +5,7 @@ on:
 permissions:
   contents: read
 env:
-  TESTED_SHA: 03b6bebacb78c5e6833a2bfcb41a2a1c34ea4ed7
+  TESTED_SHA: a2ca9be5ff7fcc5a2b75a9822274ccd4ea418cf9
 jobs:
   build-test:
     strategy:
